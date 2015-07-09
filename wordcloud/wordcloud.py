@@ -17,13 +17,14 @@ from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
 
-from .query_integral_image import query_integral_image
+from query_integral_image import query_integral_image
 
 item1 = itemgetter(1)
 
 FONT_PATH = os.environ.get("FONT_PATH", os.path.join(os.path.dirname(__file__), "DroidSansMono.ttf"))
 STOPWORDS = set([x.strip() for x in open(os.path.join(os.path.dirname(__file__),
                                                       'stopwords')).read().split('\n')])
+SUFFIXES = {'s', 'ed', 'ing', 'ly', 'er', 'es'}
 
 
 class IntegralOccupancyMap(object):
@@ -159,11 +160,13 @@ class WordCloud(object):
                  ranks_only=False, prefer_horizontal=0.9, mask=None, scale=1,
                  color_func=random_color_func, max_words=200, min_font_size=4,
                  stopwords=None, random_state=None, background_color='black',
-                 max_font_size=None, font_step=1, mode="RGB"):
+                 max_font_size=None, font_step=1, mode="RGB", suffixes=None):
         if stopwords is None:
             stopwords = STOPWORDS
         if font_path is None:
             font_path = FONT_PATH
+        if suffixes is None:
+            suffixes = SUFFIXES
         self.font_path = font_path
         self.width = width
         self.height = height
@@ -185,6 +188,7 @@ class WordCloud(object):
             max_font_size = height
         self.max_font_size = max_font_size
         self.mode = mode
+        self.suffixes = suffixes
 
     def fit_words(self, frequencies):
         """Create a word_cloud from words and frequencies.
@@ -327,8 +331,9 @@ class WordCloud(object):
         d = {}
         flags = (re.UNICODE if sys.version < '3' and type(text) is unicode
                  else 0)
+        min_word_length = 3
         for word in re.findall(r"\w[\w']*", text, flags=flags):
-            if word.isdigit():
+            if word.isdigit() or len(word) < min_word_length:
                 continue
 
             word_lower = word.lower()
@@ -351,15 +356,35 @@ class WordCloud(object):
             first = max(d2.items(), key=item1)[0]
             d3[first] = sum(d2.values())
 
-        # merge plurals into the singular count (simple cases only)
+        # merge two keys together
+        def _merge_d3_keys(kept_key, merged_key, merge_larger=True, verbose=False):
+            merged = False
+            if kept_key in d3:
+                merged_value = d3[merged_key]
+                kept_value = d3[kept_key]
+                if merge_larger or kept_value >= merged_value:
+                    if verbose:
+                        print 'Merging {0} ({1}) into {2} ({3})'.format(merged_key, merged_value,
+                                                                        kept_key, kept_value)
+                    d3[kept_key] += merged_value
+                    del d3[merged_key]
+                    merged = True
+
+            return merged
+
+        min_root_length = 3
         for key in list(d3.keys()):
-            if key.endswith('s'):
-                key_singular = key[:-1]
-                if key_singular in d3:
-                    val_plural = d3[key]
-                    val_singular = d3[key_singular]
-                    d3[key_singular] = val_singular + val_plural
-                    del d3[key]
+            for suffix in self.suffixes:
+                suffix_len = len(suffix)
+                if key.endswith(suffix) and len(key) >= (suffix_len + min_root_length):
+                    key_root = key[:-suffix_len]
+                    if _merge_d3_keys(key_root, key):
+                        break
+
+                    for other_suffix in self.suffixes.difference({suffix}):
+                        other_key = key_root + other_suffix
+                        if _merge_d3_keys(other_key, key, merge_larger=False):
+                            break
 
         words = sorted(d3.items(), key=item1, reverse=True)
         words = words[:self.max_words]
